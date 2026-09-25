@@ -37,9 +37,9 @@ The project is configured for the common 2432S028R wiring: TFT SPI pins 12/13/14
 1. Install VS Code with PlatformIO.
 2. Open this folder as a PlatformIO project.
 3. Run `pio run -t upload` and open the serial monitor at 115200 baud.
-4. Configure Wi-Fi credentials using the board's stored Arduino Wi-Fi credentials, or replace `WiFi.begin()` in `src/main.cpp` with `WiFi.begin("SSID", "PASSWORD")` before uploading.
+4. Configure Wi-Fi credentials in `connectWiFi()` in `src/main.cpp`, then upload the firmware and open the serial monitor at 115200 baud.
 
-The display starts in landscape orientation. Tap **SCAN NETWORKS** after Wi-Fi connects. **RUN DIAGNOSTICS** performs five connection attempts and records the result in the Logs tab.
+The display starts in landscape orientation. Wi-Fi connects in the background so the touch interface remains responsive. The status changes to **Wi-Fi connected** or **Wi-Fi connection failed**; failed attempts retry automatically after 15 seconds. Tap **SCAN NETWORKS** after Wi-Fi connects. **RUN DIAGNOSTICS** performs five connection attempts and records the result in the Logs tab.
 
 ## Board pin map
 
@@ -58,13 +58,13 @@ The display and touch controller share the SPI bus. The firmware initializes the
 
 ## Wi-Fi credentials
 
-The default `WiFi.begin()` call allows the ESP32 Arduino Wi-Fi stack to use credentials already stored on the device. For a first-time setup, replace it with credentials before uploading:
+Set your network name and password in `connectWiFi()` before uploading:
 
 ```cpp
-WiFi.begin("network-name", "network-password");
+WiFi.begin("your-network-name", "your-network-password");
 ```
 
-Avoid committing real credentials to source control. A local PlatformIO build flag or a private `include/secrets.h` file is safer for repeated development builds.
+Both values must be quoted strings. The ESP32 supports 2.4 GHz Wi-Fi networks. Avoid committing real credentials to source control; a private `include/secrets.h` file or local build configuration is safer for repeated development builds.
 
 ## Using the dashboard
 
@@ -98,12 +98,12 @@ If touch is offset, change the four raw calibration values. If X and Y are swapp
 | Display is blank | Confirm the TFT_eSPI pin definitions in `platformio.ini` and use a USB cable that supplies power. |
 | Touch does not respond | Verify touch CS `33`, IRQ `36`, and the calibration range. |
 | No networks appear | Confirm Wi-Fi credentials and wait for the ESP32 to associate before scanning. |
+| Status says connection failed | Confirm the SSID/password, use a 2.4 GHz network, and allow the automatic retry to run. |
 | Diagnostics show 100% loss | Check internet access; the test endpoint must be reachable on TCP port 80. |
 | Build cannot find headers | Run the project through PlatformIO so its dependencies are installed from `platformio.ini`. |
 
 ## Notes
 
 - The firmware intentionally limits the visible scan list to 12 networks so the touch UI remains responsive.
-- Channel chart values count visible access points, not airtime utilization.
 - NVS logging survives reset and power cycles, but it is a small rolling history. Add an SD library and writer if full historical export is required.
 - The channel chart measures the number of detected access points, not actual radio airtime utilization.

@@ -16,6 +16,8 @@ constexpr uint8_t SpiMosiPin = 13;
 constexpr uint8_t MaxNetworks = 12;
 constexpr uint8_t MaxLogEntries = 8;
 constexpr uint32_t ScanIntervalMs = 30000;
+constexpr uint32_t WiFiConnectionTimeoutMs = 10000;
+constexpr uint32_t WiFiRetryIntervalMs = 15000;
 
 TFT_eSPI display;
 XPT2046_Touchscreen touch(TouchCsPin, TouchIrqPin);
@@ -44,6 +46,9 @@ uint8_t networkCount = 0;
 String logs[MaxLogEntries];
 uint8_t logCount = 0;
 uint32_t lastScan = 0;
+uint32_t wifiAttemptStarted = 0;
+uint32_t nextWifiAttempt = 0;
+bool wifiConnecting = false;
 
 void flushDisplay(lv_disp_drv_t *driver, const lv_area_t *area, lv_color_t *colorBuffer) {
   const uint32_t width = area->x2 - area->x1 + 1;
@@ -260,8 +265,30 @@ void createDashboard() {
 
 void connectWiFi() {
   WiFi.mode(WIFI_STA);
-  WiFi.begin();
-  setStatus("Wi-Fi setup required");
+  WiFi.begin("NDT-Alex", "8888-8888");
+  setStatus("Connecting to Wi-Fi...");
+  wifiAttemptStarted = millis();
+  wifiConnecting = true;
+}
+
+void serviceWiFi() {
+  if (WiFi.status() == WL_CONNECTED) {
+    if (wifiConnecting) {
+      wifiConnecting = false;
+      setStatus("Wi-Fi connected");
+    }
+    return;
+  }
+
+  if (wifiConnecting && millis() - wifiAttemptStarted >= WiFiConnectionTimeoutMs) {
+    wifiConnecting = false;
+    setStatus("Wi-Fi connection failed");
+    nextWifiAttempt = millis() + WiFiRetryIntervalMs;
+  }
+
+  if (!wifiConnecting && millis() >= nextWifiAttempt) {
+    connectWiFi();
+  }
 }
 }  // namespace
 
@@ -301,6 +328,7 @@ void loop() {
   lv_tick_inc(now - lastTick);
   lastTick = now;
   lv_timer_handler();
+  serviceWiFi();
   if (WiFi.status() == WL_CONNECTED && millis() - lastScan > ScanIntervalMs && networkCount == 0) {
     scanNetworks(nullptr);
   }

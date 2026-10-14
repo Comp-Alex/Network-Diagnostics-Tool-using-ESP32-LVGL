@@ -49,6 +49,7 @@ lv_obj_t *pageStatus = nullptr;
 lv_obj_t *titleLabel = nullptr;
 lv_obj_t *statusLabel = nullptr;
 lv_obj_t *networkList = nullptr;
+lv_obj_t *lanDeviceResultsLabel = nullptr;
 lv_obj_t *bleDeviceList = nullptr;
 lv_obj_t *passwordDialog = nullptr;
 lv_obj_t *darkModeSwitch = nullptr;
@@ -105,6 +106,7 @@ uint8_t bleDeviceCount = 0;
 String logs[MaxLogEntries];
 uint8_t logCount = 0;
 uint32_t wifiAttemptStarted = 0;
+uint32_t wifiScanStarted = 0;
 bool wifiConnecting = false;
 bool widsActive = false;
 bool trafficMonitorActive = false;
@@ -118,6 +120,8 @@ enum class ScanJob : uint8_t { Idle, Wifi, Ble };
 ScanJob scanJob = ScanJob::Idle;
 enum class ConnectivityView : uint8_t { Wifi, Bluetooth };
 ConnectivityView connectivityView = ConnectivityView::Wifi;
+bool lanDeviceScanPending = false;
+uint32_t lanDeviceScanRequestedAt = 0;
 
 lv_obj_t *makeButton(lv_obj_t *parent, const char *text, lv_event_cb_t callback);
 void openPasswordEntry(const String &ssid);
@@ -465,7 +469,7 @@ void renderBleResults() {
 }
 
 void startBleScan() {
-  if (scanJob != ScanJob::Idle) {
+  if (scanJob != ScanJob::Idle || SubnetScanner::running()) {
     setStatus("A radio scan is already running");
     return;
   }
@@ -516,7 +520,7 @@ void finishWifiScan(int found) {
 }
 
 void scanNetworks(lv_event_t *) {
-  if (scanJob != ScanJob::Idle) {
+  if (scanJob != ScanJob::Idle || SubnetScanner::running()) {
     setStatus("A radio scan is already running");
     return;
   }
@@ -526,14 +530,19 @@ void scanNetworks(lv_event_t *) {
     setStatus("Wi-Fi radio unavailable");
     return;
   }
+  WiFi.scanDelete();
   setStatus("Scanning nearby networks...");
   networkCount = 0;
-  const int result = WiFi.scanNetworks(true, true);
+  const int result = WiFi.scanNetworks(
+      true, true, false, NdtConfig::WiFiScanDwellMs, 0);
   if (result == WIFI_SCAN_FAILED) {
-    setStatus("Could not start Wi-Fi scan");
+    WiFi.scanDelete();
+    addLog("Wi-Fi scan start failed: " + String(result));
+    setStatus("Could not start Wi-Fi scan (" + String(result) + ")");
     return;
   }
   scanJob = ScanJob::Wifi;
+  wifiScanStarted = millis();
 }
 
 void scanBleDevices(lv_event_t *) {
@@ -545,11 +554,24 @@ void scanBleDevices(lv_event_t *) {
 void serviceScans() {
   if (scanJob == ScanJob::Wifi) {
     const int result = WiFi.scanComplete();
-    if (result == WIFI_SCAN_RUNNING) return;
+    if (result == WIFI_SCAN_RUNNING) {
+      if (millis() - wifiScanStarted < NdtConfig::WiFiScanTimeoutMs) return;
+      const esp_err_t stopResult = esp_wifi_scan_stop();
+      if (stopResult != ESP_OK) {
+        addLog("Wi-Fi scan timeout stop returned " +
+               String(static_cast<int>(stopResult)));
+      }
+      WiFi.scanDelete();
+      scanJob = ScanJob::Idle;
+      addLog("Wi-Fi scan timed out");
+      setStatus("Wi-Fi scan timed out; try again");
+      return;
+    }
     if (result < 0) {
       WiFi.scanDelete();
       scanJob = ScanJob::Idle;
-      setStatus("Wi-Fi scan failed");
+      addLog("Wi-Fi scan failed: " + String(result));
+      setStatus("Wi-Fi scan failed (" + String(result) + ")");
       return;
     }
     scanJob = ScanJob::Idle;
@@ -585,6 +607,8 @@ void cancelScansForNavigation() {
   }
   scanJob = ScanJob::Idle;
   bleScanDone = false;
+  SubnetScanner::cancel();
+  lanDeviceScanPending = false;
 }
 void toggleDarkMode(lv_event_t *event) {
   darkMode = lv_obj_has_state(lv_event_get_target(event), LV_STATE_CHECKED);
@@ -622,6 +646,11 @@ void toggleWidsGuard(lv_event_t *event) {
 
 void toggleTrafficMonitor(lv_event_t *event) {
   if (lv_obj_has_state(lv_event_get_target(event), LV_STATE_CHECKED)) {
+    if (SubnetScanner::running() || lanDeviceScanPending) {
+      lv_obj_clear_state(trafficToggleSwitch, LV_STATE_CHECKED);
+      setStatus("Wait for the LAN scan to finish");
+      return;
+    }
     if (widsActive) {
       WidsGuard::stop();
       widsActive = false;
@@ -695,7 +724,9 @@ void refreshSystemStatus() {
   }
   if (connectionStatusLabel) {
     if (connectivityView == ConnectivityView::Wifi) {
-      if (wifiConnecting) {
+      if (scanJob == ScanJob::Wifi) {
+        lv_label_set_text(connectionStatusLabel, "Wi-Fi: scanning nearby channels...");
+      } else if (wifiConnecting) {
         lv_label_set_text(connectionStatusLabel, "Wi-Fi: connecting...");
       } else if (WiFi.status() == WL_CONNECTED) {
         lv_label_set_text_fmt(connectionStatusLabel, "Wi-Fi: connected to %s",
@@ -739,6 +770,19 @@ void refreshSystemStatus() {
       String results = "TCP port 80 hosts: " + SubnetScanner::discoveredHosts();
       lv_label_set_text(subnetResultsLabel, results.c_str());
     }
+  }
+  if (lanDeviceResultsLabel && SubnetScanner::deviceDiscovery()) {
+    String results;
+    if (SubnetScanner::running()) {
+      results = "Scanning subnet: " + String(SubnetScanner::progressPercent()) +
+                "%\n";
+    } else if (SubnetScanner::complete()) {
+      results = "Responding devices:\n";
+    }
+    results = "This ESP32: " + WiFi.localIP().toString() +
+              "\nGateway: " + WiFi.gatewayIP().toString() + "\n" + results;
+    results += SubnetScanner::discoveredHosts();
+    lv_label_set_text(lanDeviceResultsLabel, results.c_str());
   }
 }
 
@@ -941,6 +985,7 @@ void createDashboard() {
   trafficToggleSwitch = nullptr;
   trafficDetailsLabel = nullptr;
   subnetResultsLabel = nullptr;
+  lanDeviceResultsLabel = nullptr;
   gatewayPingLabel = nullptr;
   dnsPingLabel = nullptr;
   channelChart = nullptr;
@@ -996,7 +1041,7 @@ void createDiagnosticsPage() {
 }
 
 void setConnectivityView(ConnectivityView view) {
-  if (scanJob != ScanJob::Idle) {
+  if (scanJob != ScanJob::Idle || SubnetScanner::running()) {
     setStatus("Wait for the current scan to finish");
     return;
   }
@@ -1114,6 +1159,51 @@ void createTrafficMonitorPage() {
   lv_label_set_long_mode(limits, LV_LABEL_LONG_WRAP);
   lv_label_set_text(limits,
                     "Passive counts only; no payload is saved. Monitoring disconnects Wi-Fi. Accurate internet data usage is unavailable in this firmware.");
+
+  makeButton(pageBody, "SCAN LAN DEVICE IPs", [](lv_event_t *) {
+    if (SubnetScanner::running() || lanDeviceScanPending) {
+      setStatus("A LAN scan is already running");
+      return;
+    }
+    if (trafficMonitorActive) {
+      TrafficMonitor::stop();
+      trafficMonitorActive = false;
+      if (trafficToggleSwitch) {
+        lv_obj_clear_state(trafficToggleSwitch, LV_STATE_CHECKED);
+      }
+      if (trafficStatusLabel) {
+        lv_label_set_text(trafficStatusLabel,
+                          "Passive monitor stopped to reconnect to Wi-Fi for LAN scan.");
+      }
+    }
+    if (!RadioManager::switchMode(MODE_WIFI_STA)) {
+      setStatus("Could not switch to Wi-Fi station mode");
+      return;
+    }
+    if (WiFi.status() == WL_CONNECTED) {
+      if (!SubnetScanner::startDeviceDiscovery()) {
+        setStatus("Could not start LAN IP scan");
+        return;
+      }
+      if (lanDeviceResultsLabel) {
+        lv_label_set_text(lanDeviceResultsLabel, "Scanning local network...");
+      }
+      setStatus("Scanning for responding LAN device IPs");
+      return;
+    }
+    lanDeviceScanPending = true;
+    lanDeviceScanRequestedAt = millis();
+    if (lanDeviceResultsLabel) {
+      lv_label_set_text(lanDeviceResultsLabel,
+                        "Waiting for Wi-Fi reconnect before scanning...");
+    }
+    setStatus("Reconnecting Wi-Fi before LAN scan");
+  });
+  lanDeviceResultsLabel = lv_label_create(pageBody);
+  lv_obj_set_width(lanDeviceResultsLabel, 288);
+  lv_label_set_long_mode(lanDeviceResultsLabel, LV_LABEL_LONG_WRAP);
+  lv_label_set_text(lanDeviceResultsLabel,
+                    "LAN scan checks for hosts responding on common TCP ports. It may not find devices that block these probes.");
   applyDashboardTheme();
 }
 
@@ -1171,6 +1261,7 @@ void createDashboardBaseForSubpage(const char *headingText) {
   widsSwitch = widsStatusLabel = nullptr;
   trafficStatusLabel = trafficToggleSwitch = trafficDetailsLabel = nullptr;
   subnetResultsLabel = gatewayPingLabel = dnsPingLabel = nullptr;
+  lanDeviceResultsLabel = nullptr;
   channelChart = nullptr;
   channelSeries = nullptr;
   latencyLabel = lossLabel = nullptr;
@@ -1201,6 +1292,33 @@ void serviceWiFi() {
     wifiConnecting = false;
     setStatus("Wi-Fi connection failed");
     addLog("Wi-Fi connection timed out");
+  }
+}
+
+void serviceLanDeviceDiscovery() {
+  if (!lanDeviceScanPending) return;
+  if (WiFi.status() == WL_CONNECTED) {
+    lanDeviceScanPending = false;
+    if (!SubnetScanner::startDeviceDiscovery()) {
+      if (lanDeviceResultsLabel) {
+        lv_label_set_text(lanDeviceResultsLabel, "Could not start LAN IP scan.");
+      }
+      setStatus("Could not start LAN IP scan");
+      return;
+    }
+    if (lanDeviceResultsLabel) {
+      lv_label_set_text(lanDeviceResultsLabel, "Scanning local network...");
+    }
+    setStatus("Scanning for responding LAN device IPs");
+    return;
+  }
+  if (millis() - lanDeviceScanRequestedAt >= WiFiConnectionTimeoutMs) {
+    lanDeviceScanPending = false;
+    if (lanDeviceResultsLabel) {
+      lv_label_set_text(lanDeviceResultsLabel,
+                        "Wi-Fi is still disconnected. Reconnect, then try again.");
+    }
+    setStatus("Reconnect to Wi-Fi before scanning LAN devices");
   }
 }
 }  // namespace
@@ -1248,6 +1366,7 @@ void loop() {
   lastTick = now;
   lv_timer_handler();
   serviceWiFi();
+  serviceLanDeviceDiscovery();
   serviceScans();
   TrafficMonitor::service();
   TimeManager::service(WiFi.status() == WL_CONNECTED);

@@ -48,6 +48,12 @@ observed frame bytes, and average RSSI. It does not save or decode packet
 payloads. This is an over-the-air observation, not a measure of the connected
 network's or device's internet usage. The ESP32's single radio disconnects
 from Wi-Fi while monitoring; stop the monitor to resume station operation.
+The Traffic Monitor screen also has a LAN IP scan. It checks the local subnet
+for hosts responding on TCP ports 80, 443, 22, 445, or 8080 and displays their
+IP addresses and the responding port. This is best-effort host discovery, not
+the router's DHCP client list: devices with those ports closed or filtered may
+not appear. Starting the LAN scan stops passive frame monitoring and uses the
+ESP32's Wi-Fi connection.
 
 ### WIDS Guard
 
@@ -62,7 +68,10 @@ Wi-Fi scan results in Connections identify visible open/WEP networks. BLE
 device names matching strings such as “AirTag”, “Tile”, “SmartTag”, or
 “Chipolo” are marked as possible tracker-like names; this heuristic does not
 reliably identify trackers. Scans run asynchronously so the display clock and
-status continue to update.
+status continue to update. Wi-Fi scans dwell for 800 ms per channel and are
+limited to 20 seconds; timed-out or failed scans release their radio resources
+and report the driver result code.
+See [the Wi-Fi scan fix report](./WIFI_SCAN_FIX_REPORT.md) for details.
 
 ## Source layout
 

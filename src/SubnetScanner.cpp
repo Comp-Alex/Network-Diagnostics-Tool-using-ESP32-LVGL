@@ -4,6 +4,7 @@
 #include <WiFiClient.h>
 
 namespace {
+constexpr uint16_t DeviceDiscoveryPorts[] = {80, 443, 22, 445, 8080};
 uint32_t nextAddress = 0;
 uint32_t finalAddress = 0;
 uint32_t localAddress = 0;
@@ -13,6 +14,7 @@ uint32_t scanTotalHosts = 0;
 String discovered;
 bool scanRunning = false;
 bool scanComplete = false;
+bool scanForDevices = false;
 
 uint32_t addressValue(const IPAddress &address) {
   return (static_cast<uint32_t>(address[0]) << 24) |
@@ -28,7 +30,8 @@ IPAddress addressFromValue(uint32_t value) {
 }  // namespace
 
 namespace SubnetScanner {
-bool start() {
+bool startScan(bool findDevices) {
+  if (scanRunning) return false;
   if (WiFi.status() != WL_CONNECTED) return false;
   IPAddress ip = WiFi.localIP();
   IPAddress mask = WiFi.subnetMask();
@@ -45,8 +48,23 @@ bool start() {
                        : 0;
   discovered = "";
   scanComplete = false;
+  scanForDevices = findDevices;
   scanRunning = nextAddress <= finalAddress;
   return scanRunning;
+}
+
+bool start() {
+  return startScan(false);
+}
+
+bool startDeviceDiscovery() {
+  return startScan(true);
+}
+
+void cancel() {
+  scanRunning = false;
+  scanComplete = false;
+  scanForDevices = false;
 }
 
 void service() {
@@ -61,12 +79,20 @@ void service() {
   testedHosts++;
   if (candidateValue == localAddress || candidateValue == gatewayAddress) return;
 
-  WiFiClient client;
-  client.setTimeout(25);
-  if (client.connect(addressFromValue(candidateValue), 80, 25)) {
-    if (discovered.length() > 0) discovered += ", ";
-    discovered += addressFromValue(candidateValue).toString();
+  const IPAddress candidate = addressFromValue(candidateValue);
+  const size_t portCount = scanForDevices
+                               ? sizeof(DeviceDiscoveryPorts) / sizeof(DeviceDiscoveryPorts[0])
+                               : 1;
+  for (size_t index = 0; index < portCount; index++) {
+    const uint16_t port = scanForDevices ? DeviceDiscoveryPorts[index] : 80;
+    WiFiClient client;
+    client.setTimeout(25);
+    if (!client.connect(candidate, port, 25)) continue;
+    if (discovered.length() > 0) discovered += "\n";
+    discovered += candidate.toString();
+    if (scanForDevices) discovered += "  TCP " + String(port);
     client.stop();
+    break;
   }
 
   if (nextAddress > finalAddress) {
@@ -83,6 +109,10 @@ bool complete() {
   return scanComplete;
 }
 
+bool deviceDiscovery() {
+  return scanForDevices;
+}
+
 uint8_t progressPercent() {
   if (scanTotalHosts == 0) return scanComplete ? 100 : 0;
   const uint32_t progress = static_cast<uint32_t>(testedHosts) * 100 / scanTotalHosts;
@@ -90,7 +120,10 @@ uint8_t progressPercent() {
 }
 
 String discoveredHosts() {
-  if (discovered.length() == 0) return "No TCP port 80 responders found.";
+  if (discovered.length() == 0) {
+    return scanForDevices ? "No responders on the probed TCP ports."
+                          : "No TCP port 80 responders found.";
+  }
   return discovered;
 }
 }  // namespace SubnetScanner

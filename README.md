@@ -136,3 +136,15 @@ rotation.
   independently.
 - WIDS and tracker-name results are indicators for troubleshooting, not
   definitive security findings.
+
+## Engineering dashboard
+
+A generated engineering dashboard is available at [dashboard/output/DASHBOARD.md](dashboard/output/DASHBOARD.md).
+
+To regenerate the dashboard locally:
+
+```bash
+python dashboard/dashboard.py
+```
+
+For automated updates, use the repository's CI workflow (see .github/workflows/dashboard.yml) to run the generator on push or schedule.

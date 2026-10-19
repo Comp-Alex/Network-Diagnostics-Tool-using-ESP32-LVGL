@@ -1,0 +1,14 @@
+{
+  "output": "dashboard/output/DASHBOARD.md",
+  "roadmap_defaults": [
+    "Polish Wi‑Fi connection persistence and credential storage (NVS)",
+    "Add more precise LAN device discovery and optional mDNS support",
+    "Improve false-positive handling for WIDS heuristics and add configurable sensitivity",
+    "Add optional packet capture/logging mode (user opt-in) and secure export",
+    "Add OTA update support and CI build artifacts",
+    "Implement automated tests or hardware-in-loop validation flows"
+  ],
+  "github": {
+    "use_github_api_if_token_present": true
+  }
+}
